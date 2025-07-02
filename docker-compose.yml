@@ -1,0 +1,108 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_DB: metastore
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "hive"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    environment:
+      - CLUSTER_NAME=demo
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - HDFS_NAMENODE_RPC_PORT=9000
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - namenode:/hadoop/dfs/name
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    ports:
+      - "9864:9864"
+    depends_on:
+      namenode:
+        condition: service_healthy
+    volumes:
+      - datanode:/hadoop/dfs/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9864"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-metastore
+    entrypoint: /opt/hive/bin/hive --service metastore  # << ЭТО ГЛАВНОЕ
+    environment:
+      HIVE_METASTORE_DB_TYPE: postgres
+      HIVE_DB_NAME: metastore
+      HIVE_DB_USER: hive
+      HIVE_DB_PASS: hive
+      HIVE_METASTORE_URI: thrift://hive-metastore:9083
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+      datanode:
+        condition: service_healthy
+    restart: on-failure
+    ports:
+      - "9083:9083"
+    volumes:
+      - ./hive/hive-site.xml:/opt/hive/conf/hive-site.xml
+
+  hive-cli:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-cli
+    depends_on:
+      hive-metastore:
+        condition: service_started
+    entrypoint: /bin/bash -c "sleep 10 && hive --service cli"
+
+  jupyter:
+    image: jupyter/all-spark-notebook
+    container_name: jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./hive/hive-site.xml:/usr/local/spark/conf/hive-site.xml
+      - ./jars/postgresql-42.6.0.jar:/usr/local/spark/jars/postgresql-42.6.0.jar
+    environment:
+      - SPARK_OPTS=--conf spark.sql.catalogImplementation=hive
+      - PYSPARK_SUBMIT_ARGS=--conf spark.sql.catalogImplementation=hive pyspark-shell
+    depends_on:
+      hive-metastore:
+        condition: service_started
+      namenode:
+        condition: service_healthy
+      datanode:
+        condition: service_healthy
+
+volumes:
+  namenode:
+  datanode:
